@@ -1,9 +1,5 @@
 // DumpTLB.cpp : Defines the entry point for the console application.
 //
-// $Log$
-// Revision 1.1.1.1  2002/01/18 05:31:45  dewhisna
-// Initial Release
-//
 //
 
 #include "stdafx.h"
