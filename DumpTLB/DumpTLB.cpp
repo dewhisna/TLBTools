@@ -1,11 +1,14 @@
 // DumpTLB.cpp : Defines the entry point for the console application.
 //
 // $Log$
+// Revision 1.1.1.1  2002/01/18 05:31:45  dewhisna
+// Initial Release
+//
 //
 
 #include "stdafx.h"
 
-#define VERSION 100
+#define VERSION 201
 
 //#define BIG_ENDIAN		// Enable this line when compiling this program on big endian architecture
 
@@ -59,7 +62,7 @@ const char *SectionNames[NUM_FILE_SECTIONS] = {
 					"String Table (Help strings, enum names, etc)",
 					"Object TypeCode Table",
 					"???",
-					"Mystery Table",
+					"Constants Table",
 					"Weird GUID Reference Table",
 					"???",
 					"???"
@@ -75,9 +78,29 @@ typedef enum {	SNE_OBJECTS_TABLE = 0,
 				SNE_TYPE_NAMES_TABLE = 7,
 				SNE_STRING_TABLE = 8,
 				SNE_OBJECT_TYPECODE_TABLE = 9,
-				SNE_MYSTERY_TABLE = 11,
+				SNE_CONSTANTS_TABLE = 11,
 				SNE_WEIRD_GUID_REF_TABLE = 12
 } SECTION_NAMES_ENUM;
+
+//typedef enum {	OTC_UNKNOWN = 0,
+//				OTC_ENUM = 0x2120,
+//				OTC_STRUCT = 0x2121,
+//				OTC_MODULE = 0x0922,
+//				OTC_DISPINTERFACE = 0x2124,
+//				OTC_COCLASS = 0x2125,
+//				OTC_ALIAS = 0x2126,
+//				OTC_INTERFACE = 0x2134
+//} OBJECT_TYPE_CODES_ENUM;
+
+typedef enum {	OTC_UNKNOWN = 0,
+				OTC_ENUM = 0x20,
+				OTC_STRUCT = 0x21,
+				OTC_MODULE = 0x22,
+				OTC_DISPINTERFACE = 0x24,
+				OTC_COCLASS = 0x25,
+				OTC_ALIAS = 0x26,
+				OTC_INTERFACE = 0x34
+} OBJECT_TYPE_CODES_ENUM;
 
 typedef struct {
 	DWORD	address;
@@ -87,6 +110,7 @@ typedef struct {
 } FILE_SECTION_MAPPING_TABLE_ENTRY_STRUCT;
 
 typedef struct {
+	OBJECT_TYPE_CODES_ENUM	nType;
 	DWORD	address;
 	DWORD	length;
 	DWORD	ofs_typename;
@@ -98,6 +122,7 @@ typedef struct {
 	DWORD	id;
 	DWORD	ofs_typename;
 	DWORD	ofs_typeinfo;
+	BOOL	b_ismethod;
 } OBJECT_DATA_MAPPING_ENTRY_STRUCT;
 
 // ------------------------------------------------------------------
@@ -116,6 +141,11 @@ typedef struct {
 	OBJECT_DATA_MAPPING_ENTRY_STRUCT *ObjectDataEntries = NULL;
 
 	char *pTempString = NULL;
+
+// ------------------------------------------------------------------
+
+//	Prototypes:
+extern char *DecodeTypeNameEntry(DWORD nTypeNameOffset, FILE *zFile);
 
 // ------------------------------------------------------------------
 
@@ -229,20 +259,21 @@ void WriteSectionBreak(char zSep, DWORD nWidth, const char *szLabel)
 	int nTemp;
 	char szSep[2];
 
-	if (strlen(szLabel) != 0) {
+	if ((szLabel != NULL) && (strlen(szLabel) != 0)) {
 		nTemp = (nWidth - strlen(szLabel) - 2) / 2;
 	} else {
 		nTemp = nWidth / 2;
 	}
 	sprintf(szSep, "%c", zSep);
 
-	if (strlen(szLabel) != 0) printf("\n");
+	if ((szLabel != NULL) && (strlen(szLabel) != 0)) printf("\n");
 	PrintRepString(szSep, nTemp);
-	if (strlen(szLabel) != 0) printf(" %s ", szLabel);
+	if ((szLabel != NULL) && (strlen(szLabel) != 0)) printf(" %s ", szLabel);
 	PrintRepString(szSep, nTemp);
-	if (((nTemp * 2) + strlen(szLabel) + ((strlen(szLabel) != 0) ? 2 : 0)) != nWidth) printf(szSep);
+	if ((szLabel != NULL) && 
+		(((nTemp * 2) + strlen(szLabel) + ((strlen(szLabel) != 0) ? 2 : 0)) != nWidth)) printf(szSep);
 	printf("\n");
-	if (strlen(szLabel) != 0) printf("\n");
+	if ((szLabel != NULL) && (strlen(szLabel) != 0)) printf("\n");
 }
 
 int ReadData(DATABUF_UNION **pzData, size_t nCount, FILE *zFile)
@@ -313,6 +344,37 @@ void LookupGUID(DATABUF_UNION *pzData, char **ppszBuf)
 	}
 }
 
+char *DecodeObjectType(WORD nTypeCode)
+{
+	char *pType = "???";
+
+	switch (nTypeCode & 0xFF) {
+		case OTC_ENUM:
+			pType = "ENUM";
+			break;
+		case OTC_STRUCT:
+			pType = "STRUCT";
+			break;
+		case OTC_MODULE:
+			pType = "MODULE";
+			break;
+		case OTC_DISPINTERFACE:
+			pType = "DISPINTERFACE";
+			break;
+		case OTC_COCLASS:
+			pType = "COCLASS";
+			break;
+		case OTC_ALIAS:
+			pType = "ALIAS";
+			break;
+		case OTC_INTERFACE:
+			pType = "INTERFACE";
+			break;
+	}
+
+	return strdup(pType);
+}
+
 char *DecodeObject(DWORD nObjectOfs, FILE *zFile, int nSearchOrder)
 {
 	char Buffer[1024];
@@ -343,22 +405,17 @@ char *DecodeObject(DWORD nObjectOfs, FILE *zFile, int nSearchOrder)
 		 if (ObjectIndexes[i] == nObjectOfs) nTemp = i;
 
 	if (nTemp != -1) {
-		while (1) {
-			fseek(zFile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-						ObjectDataMapping[nTemp].ofs_typename, SEEK_SET);
-			if (!ReadData(&myData, 3, zFile)) break;
-
-			nTemp = myData[2].byte[0];
-			if (!ReadData(&myData, (nTemp+3)/4, zFile)) break;
-
-			strncpy(Buffer, (const char*)myData, nTemp);
-			Buffer[nTemp] = 0;
-			break;
+		pTemp = DecodeTypeNameEntry(ObjectDataMapping[nTemp].ofs_typename, zFile);
+		if (pTemp) {
+			strcpy(Buffer, pTemp);
+			free(pTemp);
 		}
+		pTemp = NULL;
 
 		nLocalOffset = FileSectionMapping[SNE_GUID_TABLE].length;	// Set this to skip next loop
 	}
 
+	pTemp = NULL;
 	while (nLocalOffset < FileSectionMapping[SNE_GUID_TABLE].length) {
 		if (!ReadData(&myData, 6, zFile)) break;
 		nLocalOffset += 0x18ul;
@@ -438,6 +495,98 @@ char *DecodeGUID(DWORD nGUIDOfs, FILE *zFile)
 	if (myData) free(myData);
 
 	return strdup(Buffer);
+}
+
+char *DecodeStringEntry(DWORD nStringOffset, FILE *zFile)
+{
+	DWORD nSeekSave;
+	DATABUF_UNION *myData = NULL;
+	char *pTemp = NULL;
+	int nTemp;
+
+	if (nStringOffset == 0xFFFFFFFFul) return NULL;
+
+	nSeekSave = ftell(zFile);
+
+	while (1) {
+		fseek(zFile, FileSectionMapping[SNE_STRING_TABLE].address + nStringOffset, SEEK_SET);
+		if (!ReadData(&myData, 1, zFile)) break;
+
+		nTemp = myData[0].word[0];
+		fseek(zFile, FileSectionMapping[SNE_STRING_TABLE].address + nStringOffset + 2, SEEK_SET);
+		if (!ReadData(&myData, (nTemp+5)/4, zFile)) break;
+
+		pTemp = (char *)malloc(nTemp+1);
+		if (pTemp == NULL) {
+			fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
+			break;
+		}
+		strncpy(pTemp, (const char*)myData, nTemp);
+		pTemp[nTemp] = 0;
+		break;
+	}
+
+	fseek(zFile, nSeekSave, SEEK_SET);
+
+	if (myData) free(myData);
+
+	return pTemp;
+}
+
+char *DecodeTypeNameEntry(DWORD nTypeNameOffset, FILE *zFile)
+{
+	DWORD nSeekSave;
+	DATABUF_UNION *myData = NULL;
+	char *pTemp = NULL;
+	int nTemp;
+
+	if (nTypeNameOffset == 0xFFFFFFFFul) return NULL;
+
+	nSeekSave = ftell(zFile);
+
+	while (1) {
+		fseek(zFile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address + nTypeNameOffset, SEEK_SET);
+		if (!ReadData(&myData, 3, zFile)) break;
+
+		nTemp = myData[2].byte[0];
+		if (!ReadData(&myData, (nTemp+3)/4, zFile)) break;
+
+		pTemp = (char *)malloc(nTemp+1);
+		if (pTemp == NULL) {
+			fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
+			break;
+		}
+		strncpy(pTemp, (const char*)myData, nTemp);
+		pTemp[nTemp] = 0;
+		break;
+	}
+
+	fseek(zFile, nSeekSave, SEEK_SET);
+
+	if (myData) free(myData);
+
+	return pTemp;
+}
+
+char *LookupInheritedInterface(DWORD nExposedInterfaceOffset, FILE *zFile)
+{
+	DWORD nSeekSave;
+	DATABUF_UNION *myData = NULL;
+	char *pTemp = NULL;
+
+	if (nExposedInterfaceOffset == 0xFFFFFFFFul) return NULL;
+	if (nExposedInterfaceOffset == 0xFFFFFFFEul) return strdup("ThisTypeLib");
+	if (nExposedInterfaceOffset == 0x1ul) return strdup("IDispatch");
+
+	nSeekSave = ftell(zFile);
+
+	fseek(zFile, FileSectionMapping[SNE_EXPOSED_INTERFACES_TABLE].address + nExposedInterfaceOffset, SEEK_SET);
+	if (ReadData(&myData, 1, zFile)) pTemp = DecodeObject(myData[0].dword[0], zFile, 0);
+	fseek(zFile, nSeekSave, SEEK_SET);
+
+	if (myData) free(myData);
+
+	return pTemp;
 }
 
 char *DecodeVariantTypeCode(DWORD nTypeCode)
@@ -644,10 +793,14 @@ char *DecodeTypeCode(DWORD nTypeCode, FILE *zFile)
 					free(pTemp);
 				}
 			} else {
-				pTemp = DecodeVariantTypeCode((nTypeCode>>16) & 0x00007FFF);
-				if (pTemp != NULL) {
-					strcpy(Buffer, pTemp);
-					free(pTemp);
+				if ((nTypeCode>>16) == 0xFFFE) {
+					strcpy(Buffer, "const");
+				} else {
+					pTemp = DecodeVariantTypeCode((nTypeCode>>16) & 0x00007FFF);
+					if (pTemp != NULL) {
+						strcpy(Buffer, pTemp);
+						free(pTemp);
+					}
 				}
 
 				strcat(Buffer, " ");
@@ -705,6 +858,184 @@ char *DecodeTypeCode(DWORD nTypeCode, FILE *zFile)
 	return strdup(Buffer);
 }
 
+char *DecodeObjectFlags(DWORD nObjectFlags)
+{
+	char Buffer[1024];
+	char *pAdd;
+	int nCount;
+	int nBit;
+	int nMask;
+
+	if (nObjectFlags == 0) return strdup("noncreatable");
+
+	Buffer[0]=0;
+
+	nCount = 0;
+	for (nBit=0; nBit<31; nBit++) {
+		nMask = (1 << nBit);
+		pAdd = NULL;
+
+		if (nMask & nObjectFlags) {
+			switch (nBit) {
+				case 0:
+					pAdd = "appobject";
+					break;
+				case 1:
+					pAdd = "creatable";
+					break;
+				case 2:
+					pAdd = "licensed";
+					break;
+				case 3:
+					pAdd = "predeclid";
+					break;
+				case 4:
+					pAdd = "hidden";
+					break;
+				case 5:
+					pAdd = "control";
+					break;
+				case 6:
+					pAdd = "dual";
+					break;
+				case 7:
+					pAdd = "nonextensible";
+					break;
+				case 8:
+					pAdd = "oleautomation";
+					break;
+				case 9:
+					pAdd = "restricted";
+					break;
+				case 10:
+					pAdd = "aggregatable";
+					break;
+				case 11:
+					pAdd = "replaceable";
+					break;
+				case 12:
+					pAdd = "dispatchable";
+					break;
+				case 13:
+					pAdd = "reversebind";
+					break;
+				default:
+					pAdd = "???";
+					break;
+			}
+		}
+
+		if (pAdd != NULL) {
+			if (nCount) strcat(Buffer, ", ");
+			strcat(Buffer, pAdd);
+			nCount++;
+		}
+	}
+
+	return strdup(Buffer);
+}
+
+char *DecodeArgumentType(DWORD nTypeCode)
+{
+	char Buffer[1024];
+	char *pAdd;
+	int nCount;
+	int nBit;
+	int nMask;
+
+	Buffer[0]=0;
+
+	strcat(Buffer, "[");
+
+	nCount = 0;
+	for (nBit=0; nBit<31; nBit++) {
+		nMask = (1 << nBit);
+		pAdd = NULL;
+
+		if (nMask & nTypeCode) {
+			switch (nBit) {
+				case 0:
+					pAdd = "in";
+					break;
+				case 1:
+					pAdd = "out";
+					break;
+				case 2:
+					pAdd = "lcid";
+					break;
+				case 3:
+					pAdd = "retval";
+					break;
+				case 4:
+					pAdd = "optional";
+					break;
+				case 5:
+					pAdd = "default(?)";
+					break;
+				case 6:
+					pAdd = "custom(?)";
+					break;
+				default:
+					pAdd = "???";
+					break;
+			}
+		}
+
+		if (pAdd != NULL) {
+			if (nCount) strcat(Buffer, ", ");
+			strcat(Buffer, pAdd);
+			nCount++;
+		}
+	}
+
+	strcat(Buffer, "]");
+
+	return strdup(Buffer);
+}
+
+char *DecodeInterfaceFlags(DWORD nInterfaceFlags)
+{
+	char Buffer[1024];
+	char *pAdd;
+	int nCount;
+	int nBit;
+	int nMask;
+
+	Buffer[0]=0;
+
+	strcat(Buffer, "[");
+
+	nCount = 0;
+	for (nBit=0; nBit<31; nBit++) {
+		nMask = (1 << nBit);
+		pAdd = NULL;
+
+		if (nMask & nInterfaceFlags) {
+			switch (nBit) {
+				case 0:
+					pAdd = "default";
+					break;
+				case 1:
+					pAdd = "source";
+					break;
+				default:
+					pAdd = "???";
+					break;
+			}
+		}
+
+		if (pAdd != NULL) {
+			if (nCount) strcat(Buffer, ", ");
+			strcat(Buffer, pAdd);
+			nCount++;
+		}
+	}
+
+	strcat(Buffer, "]");
+
+	return strdup(Buffer);
+}
+
 void DumpTLB(const char *szPathName)
 {
 	FILE *tlbfile;
@@ -717,6 +1048,10 @@ void DumpTLB(const char *szPathName)
 	int nTemp;
 	int bInTypeData;
 	char *pTemp;
+	float nSingleTemp;
+	double nDoubleTemp;
+	__int64 nI64Temp;
+	int nPos;
 
 	DWORD nSeekSave;
 
@@ -782,12 +1117,35 @@ void DumpTLB(const char *szPathName)
 	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": ???\n");
 
 	if (!ReadData(&zData, 1, tlbfile)) return;
-	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Count = %ld\n", zData[0].dword[0]);
+	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Object Count = %ld\n", zData[0].dword[0]);
 	nObjectCount = zData[0].dword[0];
 
-	for (i=0; i<3; i++) {
-		if (!ReadData(&zData, 4, tlbfile)) return;
-		WriteFormattedData(OME_DWORDS, &nAddr, zData, 4, 0, "");
+	if (!ReadData(&zData, 12, tlbfile)) return;
+	if (zData[0].dword[0] != 0xFFFFFFFFul) {
+		WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Library Help String - Offset = 0x%04lX", zData[0].dword[0]);
+	} else {
+		WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Library Help String = -1 = <None>");
+	}
+	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 1, ": ??? = 0x%04lX = %ld", zData[1].dword[0], zData[1].dword[0]);
+	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 2, ": Help Context = 0x%08lX", zData[2].dword[0]);
+	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 3, ": ??? = 0x%04lX = %ld", zData[3].dword[0], zData[3].dword[0]);
+	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 4, ": ??? = 0x%04lX = %ld", zData[4].dword[0], zData[4].dword[0]);
+	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 5, ": ??? = 0x%04lX = %ld", zData[5].dword[0], zData[5].dword[0]);
+	if (zData[6].dword[0] != 0xFFFFFFFFul) {
+		WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 6, ": Help Filename String - Offset = 0x%04lX", zData[6].dword[0]);
+	} else {
+		WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 6, ": Help Filename String = -1 = <None>");
+	}
+	for (i=7; i<12; i++) {
+		WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, i, ": ??? = 0x%04lX", zData[i].dword[0]);
+	}
+
+	if (zData[1].dword[0] & 0x4000ul) {
+		// It appears that either bit 0x4000 of offset 0x0028 determines whether or not we have the
+		//		following extra word.  But, it could also be the extra 0x0100 at offset 0x0014.  But,
+		//		it is going to take more sample files to know for sure.
+		if (!ReadData(&zData, 1, tlbfile)) return;
+		WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": ??? = 0x%04lX", zData[0].dword[0]);
 	}
 
 	WriteSectionBreak('=', 110, "Objects Index Table");
@@ -806,6 +1164,7 @@ void DumpTLB(const char *szPathName)
 		ObjectIndexes[i] = zData[0].dword[0];
 
 		// Clear mapping info until we've processed the objects:
+		ObjectDataMapping[i].nType = OTC_UNKNOWN;
 		ObjectDataMapping[i].address = 0;
 		ObjectDataMapping[i].length = 0;
 		ObjectDataMapping[i].ofs_typename = 0;
@@ -849,6 +1208,7 @@ void DumpTLB(const char *szPathName)
 		ObjectDataMapping[i].ofs_typename = zData[13].dword[0];
 		ObjectDataMapping[i].nMethodCount = zData[6].word[0];
 		ObjectDataMapping[i].nTypeCount = zData[6].word[1];
+		ObjectDataMapping[i].nType = (OBJECT_TYPE_CODES_ENUM)zData[0].word[0];
 	}
 
 	fseek(tlbfile, nSeekSave, SEEK_SET);
@@ -890,36 +1250,29 @@ void DumpTLB(const char *szPathName)
 					case SNE_OBJECTS_TABLE:
 						if (!ReadData(&zData, 25, tlbfile)) return;
 
-						nSeekSave = ftell(tlbfile);
-
-						fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-										zData[13].dword[0], SEEK_SET);
-						if (!ReadData(&zData2, 3, tlbfile)) return;
-						nTemp = zData2[2].byte[0];
-						if (!ReadData(&zData2, (nTemp+3)/4, tlbfile)) return;
-
-						pTempString = (char *)malloc(nTemp+1);
-						if (pTempString == NULL) {
-							fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-							fclose(tlbfile);
-							return;
-						}
-						strncpy(pTempString, (const char*)zData2, nTemp);
-						pTempString[nTemp] = 0;
+						pTempString = DecodeTypeNameEntry(zData[13].dword[0], tlbfile);
+						if (pTempString == NULL) pTempString = strdup("???");
 
 						printf("Offset %ld : %s\n", (nAddr - FileSectionMapping[nCurSection].address), pTempString);
 						WriteSectionBreak('-', 40, "");
 
-						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 0, "    : Type Code = 0x%04X", zData[0].word[0]);
+						pTemp = DecodeObjectType(zData[0].word[0]);
+						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 0, "    : Type Code = 0x%04X - %s",
+														zData[0].word[0],
+														((pTemp != NULL) ? pTemp : "???"));
+						if (pTemp) free(pTemp);
 						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 1, "    : Item Index = %d", zData[0].word[1]);
 						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 1, ": Address = 0x%04lX", zData[1].dword[0]);
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 2, ": 0x%04lX", zData[2].dword[0]);
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 3, ": 0x%04lX", zData[3].dword[0]);
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 4, "");
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 5, "");
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 2, ": ??? = 0x%04lX", zData[2].dword[0]);
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 3, ": ??? = 0x%04lX", zData[3].dword[0]);
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 4, ": ??? = 0x%04lX", zData[4].dword[0]);
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 5, ": ??? = 0x%04lX", zData[5].dword[0]);
 						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 12, "    : Method Item Count = %d", zData[6].word[0]);
 						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 13, "    : TypeDef Item Count = %d", zData[6].word[1]);
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 4, 7, "");
+
+						for (i=7; i<11; i++) {
+							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, i, ": ??? = 0x%04lX", zData[i].dword[0]);
+						}
 
 						if (zData[11].dword[0] != 0xFFFFFFFFul) {
 							pTemp = DecodeGUID(zData[11].dword[0], tlbfile);
@@ -932,7 +1285,11 @@ void DumpTLB(const char *szPathName)
 							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 11, ": GUID Table Offset = -1 = <NONE>");
 						}
 
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 12, "");
+						pTemp = DecodeObjectFlags(zData[12].dword[0]);
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 12, ": Object Flags = 0x%04lX = %s",
+												zData[12].dword[0], ((pTemp != NULL) ? pTemp : "<ERROR>"));
+						if (pTemp) free(pTemp);
+
 						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 13, ": Type Names Table Offset = 0x%04lX = \"%s\"",
 											zData[13].dword[0], pTempString);
 						if (pTempString) {
@@ -944,25 +1301,10 @@ void DumpTLB(const char *szPathName)
 						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 29, "    : Version Minor = %d", zData[14].word[1]);
 
 						if (zData[15].dword[0] != 0xFFFFFFFFul) {
-							fseek(tlbfile, FileSectionMapping[SNE_STRING_TABLE].address +
-											zData[15].dword[0], SEEK_SET);
-							if (!ReadData(&zData2, 1, tlbfile)) return;
-							nTemp = zData2[0].word[0];
-							fseek(tlbfile, FileSectionMapping[SNE_STRING_TABLE].address +
-											zData[15].dword[0] + 2, SEEK_SET);
-							if (!ReadData(&zData2, (nTemp+5)/4, tlbfile)) return;
-
-							pTempString = (char *)malloc(nTemp+1);
-							if (pTempString == NULL) {
-								fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-								fclose(tlbfile);
-								return;
-							}
-							strncpy(pTempString, (const char*)zData2, nTemp);
-							pTempString[nTemp] = 0;
+							pTempString = DecodeStringEntry(zData[15].dword[0], tlbfile);
 
 							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 15, ": HelpString : String Table Offset = 0x%04lX = \"%s\"",
-															zData[15].dword[0], pTempString);
+															zData[15].dword[0], ((pTempString != NULL) ? pTempString : "<ERROR-INVALID>"));
 						} else {
 							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 15, ": HelpString : String Table Offset = -1 = <NONE>");
 						}
@@ -971,16 +1313,36 @@ void DumpTLB(const char *szPathName)
 							pTempString = NULL;
 						}
 
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 16, "");
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 17, "");
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 18, "");
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 16, ": ??? = 0x%08lX (%ld)",
+															zData[16].dword[0], zData[16].dword[0]);
 
-						WriteFormattedData(OME_WORDS, &nAddr, zData, 10, 38, "");
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 17, ": Help Context = 0x%08lX", zData[17].dword[0]);
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 18, ": ??? = 0x%04lX", zData[18].dword[0]);
 
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 24, "");
+						for (i=38; i<42; i++) {
+							WriteFormattedData(OME_WORDS, &nAddr, zData, 1, i, "    : ??? = 0x%04lX (%ld)",
+															zData[i/2].word[i%2], zData[i/2].word[i%2]);
+						}
+
+						if (zData[21].dword[0] != 0xFFFFFFFFul) {
+							pTempString = LookupInheritedInterface(zData[21].dword[0], tlbfile);
+							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 21, ": Inherited from = 0x%04lX = \"%s\"",
+															zData[21].dword[0], ((pTempString != NULL) ? pTempString : "???"));
+						} else {
+							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 21, ": Inherited from = -1 = <Not Inherited>");
+						}
+						if (pTempString) {
+							free(pTempString);
+							pTempString = NULL;
+						}
+
+						for (i=44; i<48; i++) {
+							WriteFormattedData(OME_WORDS, &nAddr, zData, 1, i, "    : ??? = 0x%04lX (%ld)",
+															zData[i/2].word[i%2], zData[i/2].word[i%2]);
+						}
+
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 24, ": ??? = 0x%04lX", zData[24].dword[0]);
 						printf("\n");
-
-						fseek(tlbfile, nSeekSave, SEEK_SET);
 						break;
 
 					case SNE_GUID_INDEX_TABLE:
@@ -1008,7 +1370,7 @@ void DumpTLB(const char *szPathName)
 						break;
 
 					case SNE_GUID_TABLE:
-						printf("GUID: 0x%08lX:\n", (nAddr - FileSectionMapping[SNE_GUID_TABLE].address));
+						printf("GUID: 0x%04lX:\n", (nAddr - FileSectionMapping[SNE_GUID_TABLE].address));
 						WriteSectionBreak('-', 40, "");
 
 						if (!ReadData(&zData, 6, tlbfile)) return;
@@ -1036,6 +1398,9 @@ void DumpTLB(const char *szPathName)
 						break;
 
 					case SNE_EXPOSED_INTERFACES_TABLE:
+						printf("Interface: 0x%04lX:\n", (nAddr - FileSectionMapping[SNE_EXPOSED_INTERFACES_TABLE].address));
+						WriteSectionBreak('-', 40, "");
+
 						if (!ReadData(&zData, 4, tlbfile)) return;
 
 						if (pTempString) {
@@ -1055,9 +1420,32 @@ void DumpTLB(const char *szPathName)
 							pTempString = NULL;
 						}
 
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 1, ": 0x%04lX",
-											zData[1].dword[0], zData[1].dword[0]);
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 2, 2, "");
+						pTempString = DecodeInterfaceFlags(zData[1].dword[0]);
+
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 1, ": 0x%04lX = %s",
+											zData[1].dword[0], ((pTempString != NULL) ? pTempString : "???"));
+
+						if (pTempString) {
+							free(pTempString);
+							pTempString = NULL;
+						}
+
+						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 2, ": ??? = 0x%04lX", zData[2].dword[0]);
+
+						if (zData[3].dword[0] != 0xFFFFFFFFul) {
+							pTempString = LookupInheritedInterface(zData[3].dword[0], tlbfile);
+
+							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 3, ": Next Interface = 0x%04lX = \"%s\"",
+													zData[3].dword[0], ((pTempString != NULL) ? pTempString : "???"));
+						} else {
+							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 3, ": Next Interface = -1 = <None>");
+						}
+
+						if (pTempString) {
+							free(pTempString);
+							pTempString = NULL;
+						}
+
 						printf("\n");
 						break;
 
@@ -1176,8 +1564,6 @@ void DumpTLB(const char *szPathName)
 					case SNE_TYPE_NAMES_INDEX_TABLE:
 						if (!ReadData(&zData, 1, tlbfile)) return;
 
-						nSeekSave = ftell(tlbfile);
-
 						if (zData[0].dword[0] != 0xFFFFFFFFul) {
 
 							if (pTempString) {
@@ -1185,20 +1571,8 @@ void DumpTLB(const char *szPathName)
 								pTempString = NULL;
 							}
 
-							fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-											zData[0].dword[0], SEEK_SET);
-							if (!ReadData(&zData2, 3, tlbfile)) return;
-							nTemp = zData2[2].byte[0];
-							if (!ReadData(&zData2, (nTemp+3)/4, tlbfile)) return;
-
-							pTempString = (char *)malloc(nTemp+1);
-							if (pTempString == NULL) {
-								fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-								fclose(tlbfile);
-								return;
-							}
-							strncpy(pTempString, (const char*)zData2, nTemp);
-							pTempString[nTemp] = 0;
+							pTempString = DecodeTypeNameEntry(zData[0].dword[0], tlbfile);
+							if (pTempString == NULL) pTempString = strdup("???");
 
 							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Type Names Table Offset = 0x%04lX = \"%s\"",
 												zData[0].dword[0], pTempString);
@@ -1210,8 +1584,6 @@ void DumpTLB(const char *szPathName)
 							free(pTempString);
 							pTempString = NULL;
 						}
-
-						fseek(tlbfile, nSeekSave, SEEK_SET);
 						break;
 
 					case SNE_TYPE_NAMES_TABLE:
@@ -1220,34 +1592,17 @@ void DumpTLB(const char *szPathName)
 
 						if (!ReadData(&zData, 3, tlbfile)) return;
 
-						nSeekSave = ftell(tlbfile);
-
 						if (zData[0].dword[0] != 0xFFFFFFFFul) {
 							nTemp = -1;
 							for (i=0; ((i<(int)nObjectCount) && (nTemp == -1)); i++)
 								 if (ObjectIndexes[i] == zData[0].dword[0]) nTemp = i;
 
-							if (nTemp != -1) {
-								fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-											ObjectDataMapping[nTemp].ofs_typename, SEEK_SET);
-								if (!ReadData(&zData2, 3, tlbfile)) return;
-								nTemp = zData2[2].byte[0];
-								if (!ReadData(&zData2, (nTemp+3)/4, tlbfile)) return;
-
-								pTempString = (char *)malloc(nTemp+1);
-								if (pTempString == NULL) {
-									fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-									fclose(tlbfile);
-									return;
-								}
-								strncpy(pTempString, (const char*)zData2, nTemp);
-								pTempString[nTemp] = 0;
-							} else {
-								if (pTempString) {
-									free(pTempString);
-									pTempString = NULL;
-								}
+							if (pTempString) {
+								free(pTempString);
+								pTempString = NULL;
 							}
+
+							pTempString = DecodeTypeNameEntry(ObjectDataMapping[nTemp].ofs_typename, tlbfile);
 
 							WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Offset = %ld = %s",
 												zData[0].dword[0],
@@ -1269,7 +1624,6 @@ void DumpTLB(const char *szPathName)
 
 						WriteFormattedData(OME_BYTES, &nAddr, zData, 3, 9, ": ???");
 
-						fseek(tlbfile, nSeekSave, SEEK_SET);
 						nTemp = zData[2].byte[0];
 						if (!ReadData(&zData2, (nTemp+3)/4, tlbfile)) return;
 
@@ -1455,20 +1809,334 @@ void DumpTLB(const char *szPathName)
 						printf("\n");
 						break;
 
-					case SNE_MYSTERY_TABLE:
-						if (!ReadData(&zData, 2, tlbfile)) return;
+					case SNE_CONSTANTS_TABLE:
+						printf("Offset 0x%04lX:\n", (nAddr - FileSectionMapping[SNE_CONSTANTS_TABLE].address));
+						WriteSectionBreak('-', 40, "");
 
-						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 0, ": ??? = 0x%04X (%d)",
-												zData[0].word[0], zData[0].word[0]);
+						nSeekSave = ftell(tlbfile);
 
-						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 1, ": ??? = 0x%04X (%d)",
-												zData[0].word[1], zData[0].word[1]);
+						if (!ReadData(&zData, 1, tlbfile)) return;
 
-						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 2, ": ??? = 0x%04X (%d)",
-												zData[1].word[0], zData[1].word[0]);
+						pTemp = DecodeVariantTypeCode(zData[0].word[0]);
+						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 0, "    : Type Identifier = 0x%04X%s%s",
+															zData[0].word[0],
+															((pTemp != NULL) ? " = " : ""),
+															((pTemp != NULL) ? pTemp : ""));
+						if (pTemp) free(pTemp);
 
-						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 3, ": ??? = 0x%04X (%d)",
-												zData[1].word[1], zData[1].word[1]);
+						nPos = 2;
+						switch (zData[0].word[0] & 0xFFFul) {
+							case 0x0000:		// EMPTY
+								break;
+	
+							case 0x0001:		// NULL
+								break;
+	
+							case 0x0002:		// short
+								WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 1, "    : Value = 0x%04X (%d)",
+															zData[0].word[1], zData[0].word[1]);
+								nPos += 2;
+								break;
+	
+							case 0x0003:		// long
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%ld)", nTemp, nTemp);
+								nPos += 4;
+								break;
+	
+							case 0x0004:		// single
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nSingleTemp = *((float *)&zData[0].word[1]);
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = %f", nSingleTemp);
+								nPos += 4;
+								break;
+	
+							case 0x0005:		// double
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 3, tlbfile)) return;
+
+								nDoubleTemp = *((double *)&zData[0].word[1]);
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 2, 0,
+															": Value = %f", nDoubleTemp);
+
+								nPos += 8;
+								break;
+
+							case 0x0006:		// CURRENCY
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 3, tlbfile)) return;
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 2, 0,
+															": Value = 0x%08lX%08lX",
+															((DATABUF_UNION*)&zData[0].word[1])->dword[0],
+															((DATABUF_UNION*)&zData[1].word[1])->dword[0]);
+								nPos += 8;
+								break;
+
+							case 0x0007:		// DATE
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 3, tlbfile)) return;
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 2, 0,
+															": Value = 0x%08lX%08lX",
+															((DATABUF_UNION*)&zData[0].word[1])->dword[0],
+															((DATABUF_UNION*)&zData[1].word[1])->dword[0]);
+								nPos += 8;
+								break;
+
+							case 0x0008:		// BSTR
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Length = %ld", nTemp);
+
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, (nTemp+6)/4, tlbfile)) return;
+
+								WriteFormattedText(&nAddr, zData, nTemp, 6, "Value");
+
+								nPos += 4 + nTemp;
+								break;
+
+							case 0x0009:		// IDispatch
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%ld)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x000A:		// SCODE
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%ld)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x000B:		// VARIANT_BOOL
+								WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 1,
+															": Value = %s", ((zData[0].word[1] == VARIANT_FALSE) ? "FALSE" : "TRUE"));
+								nPos += 2;
+								break;
+
+							case 0x000C:		// VARIANT
+								// DON'T CURRENTLY KNOW HOW TO HANDLE VARIANTS!
+								ASSERT(FALSE);
+								break;
+
+							case 0x000D:		// IUnknown
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%ld)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x000E:		// decimal
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 4, tlbfile)) return;
+
+								WriteFormattedData(OME_BYTES, &nAddr, zData, 14, 2,
+															": Decimal Value");
+
+								nPos += 14;
+								break;
+
+							case 0x0010:		// char
+								WriteFormattedData(OME_BYTES, &nAddr, zData, 1, 2, "    : Value = 0x%02X (%d) '%c'",
+															zData[0].byte[2], zData[0].byte[2], zData[0].byte[2]);
+								nPos += 1;
+								break;
+
+							case 0x0011:		// unsigned char
+								WriteFormattedData(OME_BYTES, &nAddr, zData, 1, 2, "    : Value = 0x%02X (%u) '%c'",
+															zData[0].byte[2], zData[0].byte[2], zData[0].byte[2]);
+								nPos += 1;
+								break;
+
+							case 0x0012:		// unsigned short
+								WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 1, "    : Value = 0x%04X (%u)",
+															zData[0].word[1], zData[0].word[1]);
+								nPos += 2;
+								break;
+
+							case 0x0013:		// unsigned long
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%lu)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x0014:		// __int64
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 3, tlbfile)) return;
+
+								nI64Temp = *((__int64 *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 2, 0,
+															": Value = 0x%08I64X (%I64d)", nI64Temp, nI64Temp);
+								nPos += 8;
+								break;
+
+							case 0x0015:		// unsigned __int64
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 3, tlbfile)) return;
+
+								nI64Temp = *((__int64 *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 2, 0,
+															": Value = 0x%08I64X (%I64u)", nI64Temp, nI64Temp);
+								nPos += 8;
+								break;
+
+							case 0x0016:		// int
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%ld)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x0017:		// unsigned int
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%lu)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x0018:		// void
+								break;
+
+							case 0x0019:		// HRESULT
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%ld)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x001A:		// VT_PTR
+								fseek(tlbfile, nSeekSave, SEEK_SET);
+								if (!ReadData(&zData, 2, tlbfile)) return;
+
+								nTemp = (int)*((DWORD *)&zData[0].word[1]);
+
+								WriteFormattedData(OME_DWORDS, &nAddr, (DATABUF_UNION*)&zData[0].word[1], 1, 0,
+															": Value = 0x%08lX (%ld)", nTemp, nTemp);
+								nPos += 4;
+								break;
+
+							case 0x001B:		// VT_SAFEARRAY
+								// DON'T CURRENTLY KNOW HOW TO HANDLE SAFEARRAY!
+								ASSERT(FALSE);
+								break;
+
+							case 0x001C:		// VT_CARRAY
+								// DON'T CURRENTLY KNOW HOW TO HANDLE CARRAY!
+								ASSERT(FALSE);
+								break;
+
+							case 0x001D:		// VT_USERDEFINED
+								// DON'T CURRENTLY KNOW HOW TO HANDLE USERDEFINED!
+								ASSERT(FALSE);
+								break;
+
+							case 0x001E:		// LPSTR
+								// DON'T CURRENTLY KNOW HOW TO HANDLE LPSTR!
+								ASSERT(FALSE);
+								break;
+
+							case 0x001F:		// LPWSTR
+								// DON'T CURRENTLY KNOW HOW TO HANDLE LPWSTR!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0040:		// FILETIME
+								// DON'T CURRENTLY KNOW HOW TO HANDLE FILETIME!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0041:		// BLOB
+								// DON'T CURRENTLY KNOW HOW TO HANDLE BLOB!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0042:		// STREAM
+								// DON'T CURRENTLY KNOW HOW TO HANDLE STREAM!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0043:		// STORAGE
+								// DON'T CURRENTLY KNOW HOW TO HANDLE STORAGE!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0044:		// STREAMED_OBJECT
+								// DON'T CURRENTLY KNOW HOW TO HANDLE STREAMED_OBJECT!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0045:		// STORED_OBJECT
+								// DON'T CURRENTLY KNOW HOW TO HANDLE STORED_OBJECT!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0046:		// BLOB_OBJECT
+								// DON'T CURRENTLY KNOW HOW TO HANDLE BLOB_OBJECT!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0047:		// CLIPBOARD_FORMAT
+								// DON'T CURRENTLY KNOW HOW TO HANDLE CLIPBOARD_FORMAT!
+								ASSERT(FALSE);
+								break;
+
+							case 0x0048:		// CLSID
+								// DON'T CURRENTLY KNOW HOW TO HANDLE CLSID!
+								ASSERT(FALSE);
+								break;
+
+							default:			// ??? --- Add future types here
+								ASSERT(FALSE);
+								break;
+						}
+
+						if (nPos % 4) WriteFormattedText(&nAddr, zData, (nPos % 4), nPos, "DWord Boundary Padding");
 
 						printf("\n");
 						break;
@@ -1505,33 +2173,18 @@ void DumpTLB(const char *szPathName)
 				DWORD nEntrySize;
 				DWORD nTypeCode;
 
-				nSeekSave = ftell(tlbfile);
-
 				if (pTempString) {
 					free(pTempString);
 					pTempString = NULL;
 				}
 
-				fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-											pObjectData->ofs_typename, SEEK_SET);
-				if (!ReadData(&zData3, 3, tlbfile)) return;
-				nTemp = zData3[2].byte[0];
-				if (!ReadData(&zData3, (nTemp+3)/4, tlbfile)) return;
-
-				pTempString = (char *)malloc(nTemp+1);
-				if (pTempString == NULL) {
-					fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-					fclose(tlbfile);
-					return;
-				}
-				strncpy(pTempString, (const char*)zData3, nTemp);
-				pTempString[nTemp] = 0;
+				pTempString = DecodeTypeNameEntry(pObjectData->ofs_typename, tlbfile);
+				if (pTempString == NULL) pTempString = strdup("???");
 
 				WriteSectionBreak('=', 80, pTempString);
-				free(pTempString);
+				if (pTempString) free(pTempString);
 				pTempString = NULL;
 
-				fseek(tlbfile, nSeekSave, SEEK_SET);
 				if (!ReadData(&zData, 1, tlbfile)) return;
 				nSeekSave = ftell(tlbfile);
 
@@ -1557,6 +2210,7 @@ void DumpTLB(const char *szPathName)
 					ObjectDataEntries[i].id = zData[i].dword[0];
 					ObjectDataEntries[i].ofs_typename = zData[nItemCount+i].dword[0];
 					ObjectDataEntries[i].ofs_typeinfo = zData[nItemCount*2+i].dword[0];
+					ObjectDataEntries[i].b_ismethod = (i < pObjectData->nMethodCount);
 				}
 
 				fseek(tlbfile, nSeekSave, SEEK_SET);
@@ -1568,34 +2222,17 @@ void DumpTLB(const char *szPathName)
 						if (nLocalOffset == ObjectDataEntries[i].ofs_typeinfo) pObjectEntry = &ObjectDataEntries[i];
 					}
 
-					nSeekSave = ftell(tlbfile);
-
 					if ((pObjectEntry) && (pObjectEntry->ofs_typename != 0xFFFFFFFFul)) {
-						fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-													pObjectEntry->ofs_typename, SEEK_SET);
-						if (!ReadData(&zData3, 3, tlbfile)) return;
-						nTemp = zData3[2].byte[0];
-						if (!ReadData(&zData3, (nTemp+3)/4, tlbfile)) return;
+						pTempString = DecodeTypeNameEntry(pObjectEntry->ofs_typename, tlbfile);
+						printf("Offset 0x%04lX = %s (%s):\n", nLocalOffset, ((pTempString != NULL) ? pTempString : "???"),
+											((pObjectEntry->b_ismethod) ? "Method" : "Typedef"));
 
-						pTempString = (char *)malloc(nTemp+1);
-						if (pTempString == NULL) {
-							fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-							fclose(tlbfile);
-							return;
-						}
-						strncpy(pTempString, (const char*)zData3, nTemp);
-						pTempString[nTemp] = 0;
-
-						printf("Offset 0x%04lX = %s:\n", nLocalOffset, pTempString);
-
-						free(pTempString);
+						if (pTempString) free(pTempString);
 						pTempString = NULL;
 					} else {
 						printf("Offset 0x%04lX = ???:\n", nLocalOffset);
 					}
 					WriteSectionBreak('-', 60, "");
-
-					fseek(tlbfile, nSeekSave, SEEK_SET);
 
 					if (!ReadData(&zData, 1, tlbfile)) return;
 
@@ -1610,12 +2247,6 @@ void DumpTLB(const char *szPathName)
 						if (!ReadData(&zData2, 5, tlbfile)) return;
 					} else {
 						if (!ReadData(&zData2, (nEntrySize/4)-1, tlbfile)) return;
-					}
-
-					if (nEntrySize >= 0x18) {
-						nSubItemCount = zData2[4].word[0];
-					} else {
-						nSubItemCount = 0;
 					}
 
 					if (nEntrySize >= 0x08) {
@@ -1638,19 +2269,32 @@ void DumpTLB(const char *szPathName)
 
 					if (nEntrySize >= 0x14) {
 						switch (nTypeCode & 0x8000FFFFul) {
+							case 0x80000003ul:
 							case 0x80000016ul:
-								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 6, "    : Index = %d", zData2[3].word[0]);
+							case 0x8000001Eul:
+								nTemp = zData2[3].dword[0];
+								if (((nTemp >> 16) & 0xFFFFul) == 0x8C00) {
+									nTemp = nTemp & 0xFFFF;
+									if (nTemp & 0x8000) nTemp += 0xFFFF0000ul;
+									WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 3, ": Value = 0x%08lX (%ld)",
+																 nTemp, nTemp);
+								} else {
+									// TODO - Add logic here for const lookup:
+									WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 3, ": Constant Table Offset = 0x%04lX",
+																 nTemp);
+								}
 								break;
+
+							case 0x80000019ul:
+								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 6, "    : ??? = 0x%04X (%d)",
+															 zData2[3].word[0], zData2[3].word[0]);
+
+								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 7, "    : Index = %d", zData2[3].word[1]);
+								break;
+
 							default:
 								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 6, "    : ??? = 0x%04X (%d)",
 															 zData2[3].word[0], zData2[3].word[0]);
-								break;
-						}
-						switch (nTypeCode & 0x8000FFFFul) {
-							case 0x80000019ul:
-								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 7, "    : Index = %d", zData2[3].word[1]);
-								break;
-							default:
 								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 7, "    : ??? = 0x%04X (%d)",
 															 zData2[3].word[1], zData2[3].word[1]);
 								break;
@@ -1658,89 +2302,145 @@ void DumpTLB(const char *szPathName)
 					}
 
 					if (nEntrySize >= 0x18) {
-						WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 4, ": Argument Count = %d", nSubItemCount);
+						//switch (nTypeCode & 0x8000FFFFul) {
+						//	case 0x80000003ul:
+						//	case 0x80000016ul:
+						//	case 0x8000001Eul:
+						//		nSubItemCount = 0;
+						//		break;
+						//	case 0x80000019ul:
+						//		nSubItemCount = zData2[4].word[0];
+						//		break;
+						//	default:
+						//		nSubItemCount = zData2[4].word[0];
+						//		break;
+						//}
+						if (pObjectEntry->b_ismethod) {
+							nSubItemCount = zData2[4].word[0];
+						} else {
+							nSubItemCount = 0;
+						}
 					} else {
-						printf("                  : Argument Count = %d\n", nSubItemCount);
+						nSubItemCount = 0;
+					}
+
+					if (nEntrySize >= 0x18) {
+						//switch (nTypeCode & 0x8000FFFFul) {
+						//	case 0x80000003ul:
+						//	case 0x80000016ul:
+						//	case 0x8000001Eul:
+						//		WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 4, ": Help Context = 0x%08lX", zData2[4].dword[0]);
+						//		break;
+						//	case 0x80000019ul:
+						//		WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 8, "    : Argument Count = %d", nSubItemCount);
+						//		WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 9, "    : Optional Argument Count = %d", zData2[4].word[1]);
+						//		break;
+						//	default:
+						//		WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 8, "    : Argument Count = %d", nSubItemCount);
+						//		WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 9, "    : Optional Argument Count = %d", zData2[4].word[1]);
+						//		break;
+						//}
+
+						if (pObjectEntry->b_ismethod) {
+								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 8, "    : Argument Count = %d", nSubItemCount);
+								WriteFormattedData(OME_WORDS, &nAddr, zData2, 1, 9, "    : Optional Argument Count = %d", zData2[4].word[1]);
+						} else {
+								WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 4, ": Help Context = 0x%08lX", zData2[4].dword[0]);
+						}
+
+					} else {
+						if (pObjectEntry->b_ismethod) printf("                  : Argument Count = %d\n", nSubItemCount);
 					}
 
 					if ((nEntrySize >= 0x18) && ((nEntrySize - 0x18) > (nSubItemCount * 0x0C))) {
 						if (!ReadData(&zData2, ((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4), tlbfile)) return;
 
-						nSeekSave = ftell(tlbfile);
+						//switch (nTypeCode & 0x8000FFFFul) {
+						//	case 0x80000019ul:
+						//		WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": Help Context = 0x%08lX", zData2[0].dword[0]);
+						//
+						//		if (((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4) >= 2) {
+						//			if ((zData2[1].dword[0] != 0xFFFFFFFFul) &&
+						//				((zData2[1].dword[0] & 0x80000000ul) == 0)) {
+						//
+						//				pTempString = DecodeStringEntry(zData2[1].dword[0], tlbfile);
+						//
+						//				WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": HelpString : String Table Offset = 0x%04lX = \"%s\"",
+						//												zData2[1].dword[0], ((pTempString != NULL) ? pTempString : "<ERROR-INVALID>"));
+						//			} else {
+						//				if (zData2[1].dword[0] == 0xFFFFFFFFul) {
+						//					WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": HelpString : String Table Offset = -1 = <NONE>");
+						//				} else {
+						//					WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": ??? = 0x%04lX (%ld)",
+						//												zData2[1].dword[0], zData2[1].dword[0]);
+						//				}
+						//			}
+						//
+						//			if (pTempString) {
+						//				free(pTempString);
+						//				pTempString = NULL;
+						//			}
+						//		}
+						//
+						//		for (i=2; (DWORD)i<((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4); i++) {
+						//			WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, i, ": ??? = 0x%08lX (%ld)",
+						//											zData2[i].dword[0], zData2[i].dword[0]);
+						//		}
+						//		break;
+						//
+						//	case 0x80000003ul:
+						//	case 0x80000016ul:
+						//	case 0x8000001Eul:
+						//		if ((zData2[0].dword[0] != 0xFFFFFFFFul) &&
+						//			((zData2[0].dword[0] & 0x80000000ul) == 0)) {
+						//			pTempString = DecodeStringEntry(zData2[0].dword[0], tlbfile);
+						//
+						//			WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": HelpString : String Table Offset = 0x%04lX = \"%s\"",
+						//											zData2[0].dword[0], ((pTempString != NULL) ? pTempString : "<ERROR-INVALID>"));
+						//		} else {
+						//			if (zData2[0].dword[0] == 0xFFFFFFFFul) {
+						//				WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": HelpString : String Table Offset = -1 = <NONE>");
+						//			} else {
+						//				WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": ??? = 0x%04lX (%ld)",
+						//											zData2[0].dword[0], zData2[0].dword[0]);
+						//			}
+						//		}
+						//
+						//		if (pTempString) {
+						//			free(pTempString);
+						//			pTempString = NULL;
+						//		}
+						//
+						//		for (i=1; (DWORD)i<((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4); i++) {
+						//			WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, i, ": ??? = 0x%08lX (%ld)",
+						//											zData2[i].dword[0], zData2[i].dword[0]);
+						//		}
+						//		break;
+						//
+						//	default:
+						//		WriteFormattedData(OME_DWORDS, &nAddr, zData2, ((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4), 0, "");
+						//		break;
+						//}
 
-						switch (nTypeCode & 0x8000FFFFul) {
-							case 0x80000019ul:
-								WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, "");
 
-								if (((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4) >= 2) {
-									if ((zData2[1].dword[0] != 0xFFFFFFFFul) &&
-										((zData2[1].dword[0] & 0x80000000ul) == 0)) {
-										fseek(tlbfile, FileSectionMapping[SNE_STRING_TABLE].address +
-														zData2[1].dword[0], SEEK_SET);
-										if (!ReadData(&zData3, 1, tlbfile)) return;
-										nTemp = zData3[0].word[0];
-										fseek(tlbfile, FileSectionMapping[SNE_STRING_TABLE].address +
-														zData2[1].dword[0] + 2, SEEK_SET);
-										if (!ReadData(&zData3, (nTemp+5)/4, tlbfile)) return;
+						nTemp = 0;
+						if (pObjectEntry->b_ismethod) {
+							WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": Help Context = 0x%08lX", zData2[0].dword[0]);
+							nTemp++;
 
-										pTempString = (char *)malloc(nTemp+1);
-										if (pTempString == NULL) {
-											fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-											fclose(tlbfile);
-											return;
-										}
-										strncpy(pTempString, (const char*)zData3, nTemp);
-										pTempString[nTemp] = 0;
+							if (((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4) >= 2) {
+								if ((zData2[1].dword[0] != 0xFFFFFFFFul) &&
+									((zData2[1].dword[0] & 0x80000000ul) == 0)) {
 
-										WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": HelpString : String Table Offset = 0x%04lX = \"%s\"",
-																		zData2[1].dword[0], pTempString);
-									} else {
-										if (zData2[1].dword[0] == 0xFFFFFFFFul) {
-											WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": HelpString : String Table Offset = -1 = <NONE>");
-										} else {
-											WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": ??? = 0x%04lX (%ld)",
-																		zData2[1].dword[0], zData2[1].dword[0]);
-										}
-									}
+									pTempString = DecodeStringEntry(zData2[1].dword[0], tlbfile);
 
-									if (pTempString) {
-										free(pTempString);
-										pTempString = NULL;
-									}
-								}
-
-								if (((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4) >= 3) {
-									WriteFormattedData(OME_DWORDS, &nAddr, zData2, ((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4) - 2, 2, "");
-								}
-								break;
-
-							case 0x80000016ul:
-								if ((zData2[0].dword[0] != 0xFFFFFFFFul) &&
-									((zData2[0].dword[0] & 0x80000000ul) == 0)) {
-									fseek(tlbfile, FileSectionMapping[SNE_STRING_TABLE].address +
-													zData2[0].dword[0], SEEK_SET);
-									if (!ReadData(&zData3, 1, tlbfile)) return;
-									nTemp = zData3[0].word[0];
-									fseek(tlbfile, FileSectionMapping[SNE_STRING_TABLE].address +
-													zData2[0].dword[0] + 2, SEEK_SET);
-									if (!ReadData(&zData3, (nTemp+5)/4, tlbfile)) return;
-
-									pTempString = (char *)malloc(nTemp+1);
-									if (pTempString == NULL) {
-										fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-										fclose(tlbfile);
-										return;
-									}
-									strncpy(pTempString, (const char*)zData3, nTemp);
-									pTempString[nTemp] = 0;
-
-									WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": HelpString : String Table Offset = 0x%04lX = \"%s\"",
-																	zData2[0].dword[0], pTempString);
+									WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": HelpString : String Table Offset = 0x%04lX = \"%s\"",
+																	zData2[1].dword[0], ((pTempString != NULL) ? pTempString : "<ERROR-INVALID>"));
 								} else {
-									if (zData2[0].dword[0] == 0xFFFFFFFFul) {
-										WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": HelpString : String Table Offset = -1 = <NONE>");
+									if (zData2[1].dword[0] == 0xFFFFFFFFul) {
+										WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": HelpString : String Table Offset = -1 = <NONE>");
 									} else {
-										WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": ??? = 0x%04lX (%ld)",
+										WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": ??? = 0x%04lX (%ld)",
 																	zData2[1].dword[0], zData2[1].dword[0]);
 									}
 								}
@@ -1750,23 +2450,40 @@ void DumpTLB(const char *szPathName)
 									pTempString = NULL;
 								}
 
-								if (((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4) >= 2) {
-									WriteFormattedData(OME_DWORDS, &nAddr, zData2, ((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4) - 1, 1, "");
-								}
-								break;
+								nTemp++;
+							}
+						} else {
+							if ((zData2[0].dword[0] != 0xFFFFFFFFul) &&
+								((zData2[0].dword[0] & 0x80000000ul) == 0)) {
+								pTempString = DecodeStringEntry(zData2[0].dword[0], tlbfile);
 
-							default:
-								WriteFormattedData(OME_DWORDS, &nAddr, zData2, ((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4), 0, "");
-								break;
+								WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": HelpString : String Table Offset = 0x%04lX = \"%s\"",
+																zData2[0].dword[0], ((pTempString != NULL) ? pTempString : "<ERROR-INVALID>"));
+							} else {
+								if (zData2[0].dword[0] == 0xFFFFFFFFul) {
+									WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": HelpString : String Table Offset = -1 = <NONE>");
+								} else {
+									WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 0, ": ??? = 0x%04lX (%ld)",
+																zData2[0].dword[0], zData2[0].dword[0]);
+								}
+							}
+
+							if (pTempString) {
+								free(pTempString);
+								pTempString = NULL;
+							}
+
+							nTemp++;
 						}
 
-						fseek(tlbfile, nSeekSave, SEEK_SET);
+						for (i=nTemp; (DWORD)i<((nEntrySize - 0x18 - (nSubItemCount * 0x0C))/4); i++) {
+							WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, i, ": ??? = 0x%08lX (%ld)",
+															zData2[i].dword[0], zData2[i].dword[0]);
+						}
 					}
 
 					for (i=0; (DWORD)i<nSubItemCount; i++) {
 						if (!ReadData(&zData2, 3, tlbfile)) return;
-
-						nSeekSave = ftell(tlbfile);
 
 						printf("\nArgument %ld:\n", i+1);
 						WriteSectionBreak('-', 20, "");
@@ -1776,23 +2493,10 @@ void DumpTLB(const char *szPathName)
 						if (pTemp) free(pTemp);
 
 						if (zData2[1].dword[0] != 0xFFFFFFFFul) {
-							fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-												zData2[1].dword[0], SEEK_SET);
-							if (!ReadData(&zData3, 3, tlbfile)) return;
-							nTemp = zData3[2].byte[0];
-							if (!ReadData(&zData3, (nTemp+3)/4, tlbfile)) return;
-
-							pTempString = (char *)malloc(nTemp+1);
-							if (pTempString == NULL) {
-								fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-								fclose(tlbfile);
-								return;
-							}
-							strncpy(pTempString, (const char*)zData3, nTemp);
-							pTempString[nTemp] = 0;
+							pTempString = DecodeTypeNameEntry(zData2[1].dword[0], tlbfile);
 
 							WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": Type Names Table Offset = 0x%04lX = \"%s\"",
-															zData2[1].dword[0], pTempString);
+															zData2[1].dword[0], ((pTempString != NULL) ? pTempString : "???"));
 						} else {
 							WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 1, ": Type Names Table Offset = -1 = retval");
 						}
@@ -1802,10 +2506,12 @@ void DumpTLB(const char *szPathName)
 							pTempString = NULL;
 						}
 
-						WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 2, ": ??? = 0x%04lX (%ld)",
-															zData2[2].dword[0], zData2[2].dword[0]);
-
-						fseek(tlbfile, nSeekSave, SEEK_SET);
+						pTemp = DecodeArgumentType(zData2[2].dword[0]);
+						WriteFormattedData(OME_DWORDS, &nAddr, zData2, 1, 2, ": %s", ((pTemp!=NULL) ? pTemp : "[???]"));
+						if (pTemp) {
+							free(pTemp);
+							pTemp = NULL;
+						}
 					}
 					if (nSubItemCount) printf("\n");
 
@@ -1818,26 +2524,7 @@ void DumpTLB(const char *szPathName)
 				for (i=0; (DWORD)i<nItemCount; i++) {
 					if (!ReadData(&zData, 1, tlbfile)) return;
 
-					nSeekSave = ftell(tlbfile);
-
-					if (ObjectDataEntries[i].ofs_typename != 0xFFFFFFFFul) {
-						fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-													ObjectDataEntries[i].ofs_typename, SEEK_SET);
-						if (!ReadData(&zData3, 3, tlbfile)) return;
-						nTemp = zData3[2].byte[0];
-						if (!ReadData(&zData3, (nTemp+3)/4, tlbfile)) return;
-
-						pTempString = (char *)malloc(nTemp+1);
-						if (pTempString == NULL) {
-							fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-							fclose(tlbfile);
-							return;
-						}
-						strncpy(pTempString, (const char*)zData3, nTemp);
-						pTempString[nTemp] = 0;
-					}
-
-					fseek(tlbfile, nSeekSave, SEEK_SET);
+					pTempString = DecodeTypeNameEntry(ObjectDataEntries[i].ofs_typename, tlbfile);
 
 					WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": id(0x%08lX)%s%s", zData[0].dword[0],
 												((pTempString != NULL) ? " = " : ""),
@@ -1853,26 +2540,7 @@ void DumpTLB(const char *szPathName)
 				for (i=0; (DWORD)i<nItemCount; i++) {
 					if (!ReadData(&zData, 1, tlbfile)) return;
 
-					nSeekSave = ftell(tlbfile);
-
-					if (ObjectDataEntries[i].ofs_typename != 0xFFFFFFFFul) {
-						fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-													ObjectDataEntries[i].ofs_typename, SEEK_SET);
-						if (!ReadData(&zData3, 3, tlbfile)) return;
-						nTemp = zData3[2].byte[0];
-						if (!ReadData(&zData3, (nTemp+3)/4, tlbfile)) return;
-
-						pTempString = (char *)malloc(nTemp+1);
-						if (pTempString == NULL) {
-							fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-							fclose(tlbfile);
-							return;
-						}
-						strncpy(pTempString, (const char*)zData3, nTemp);
-						pTempString[nTemp] = 0;
-					}
-
-					fseek(tlbfile, nSeekSave, SEEK_SET);
+					pTempString = DecodeTypeNameEntry(ObjectDataEntries[i].ofs_typename, tlbfile);
 
 					WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Type Names Table Offset = 0x%04lX%s%s%s", zData[0].dword[0],
 													((pTempString != NULL) ? " = \"" : ""),
@@ -1889,26 +2557,7 @@ void DumpTLB(const char *szPathName)
 				for (i=0; (DWORD)i<nItemCount; i++) {
 					if (!ReadData(&zData, 1, tlbfile)) return;
 
-					nSeekSave = ftell(tlbfile);
-
-					if (ObjectDataEntries[i].ofs_typename != 0xFFFFFFFFul) {
-						fseek(tlbfile, FileSectionMapping[SNE_TYPE_NAMES_TABLE].address +
-													ObjectDataEntries[i].ofs_typename, SEEK_SET);
-						if (!ReadData(&zData3, 3, tlbfile)) return;
-						nTemp = zData3[2].byte[0];
-						if (!ReadData(&zData3, (nTemp+3)/4, tlbfile)) return;
-
-						pTempString = (char *)malloc(nTemp+1);
-						if (pTempString == NULL) {
-							fprintf(stderr, "*** Error: Out of Memory or Memory Allocation Error!\n\n");
-							fclose(tlbfile);
-							return;
-						}
-						strncpy(pTempString, (const char*)zData3, nTemp);
-						pTempString[nTemp] = 0;
-					}
-
-					fseek(tlbfile, nSeekSave, SEEK_SET);
+					pTempString = DecodeTypeNameEntry(ObjectDataEntries[i].ofs_typename, tlbfile);
 
 					WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": Offset into Info Above = 0x%04lX%s%s%s", zData[0].dword[0],
 													((pTempString != NULL) ? " (" : ""),
