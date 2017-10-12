@@ -1100,7 +1100,8 @@ void DumpTLB(const char *szPathName)
 								zData[0].word[0], ((zData[0].word[0] == 0x0409) ? "American English (ENU)" : "???"));
 
 	if (!ReadData(&zData, 1, tlbfile)) return;
-	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": ???\n");
+	WriteFormattedData(OME_WORDS, &nAddr, zData, 2, 0, ": Language Code (set via [lcid] attribute) = 0x%04X = %s\n",
+								zData[0].word[0], ((zData[0].word[0] == 0x0409) ? "American English (ENU)" : "???"));
 
 	if (!ReadData(&zData, 1, tlbfile)) return;
 	WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 0, ": ???\n");
@@ -1513,8 +1514,10 @@ void DumpTLB(const char *szPathName)
 							pTempString = NULL;
 						}
 
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 1, ": ???");
-						WriteFormattedData(OME_DWORDS, &nAddr, zData, 1, 2, ": ???");
+						WriteFormattedData(OME_WORDS, &nAddr, zData, 2, 2, ": Language Code = 0x%04X = %s",
+								zData[1].word[0], ((zData[1].word[0] == 0x0409) ? "American English (ENU)" : "???"));
+						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 4, ": Version Major = 0x%02X = %d", zData[2].word[0], zData[2].word[0]);
+						WriteFormattedData(OME_WORDS, &nAddr, zData, 1, 5, ": Version Minor = 0x%02X = %d", zData[2].word[1], zData[2].word[1]);
 
 						fseek(tlbfile, nSeekSave, SEEK_SET);
 						if (!ReadData(&zData, 1, tlbfile)) return;
